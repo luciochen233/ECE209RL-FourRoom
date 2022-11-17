@@ -1,0 +1,8 @@
+gym==0.17.1
+attrs
+opencv-python
+matplotlib
+PyYAML==5.2
+seaborn==0.10.1
+wandb
+pathfinding
