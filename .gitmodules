@@ -1,3 +1,4 @@
 [submodule "rl-starter-files"]
 	path = rl-starter-files
 	url = git@github.com:luciochen233/rl-starter-files.git
+	branch = master
