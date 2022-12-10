@@ -1,4 +1,23 @@
-# RL Starter Files
+# RL Starter Files 
+# Imitation learning modification
+
+This contains a modification of the RL Starter Files that run imitation learning (bahvior cloning) with expert data.
+
+to run the imitation learning, first generate the expert data using the other repo.
+Once the expert data has benn obtained, run the following script to generate the imitation learning policy.
+
+
+``` bash
+python3 -m scripts.train2 --algo ppo --model Imitation --frames 20 --env MiniGrid-FourRooms-v0 --visibility 7 --recurrence 256 --dataset_dir "./expert_vis15_il_vis15.pt" --procs 256 --savename "vis15"
+
+```
+
+
+
+
+# below are the original README from the original repo
+
+
 
 RL starter files in order to immediatly train, visualize and evaluate an agent **without writing any line of code**.
 
