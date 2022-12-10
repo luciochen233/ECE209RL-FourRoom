@@ -16,6 +16,9 @@ git config --global status.submoduleSummary true
 ```
 # Overview on how to genereate RL expert, expert training data, and imitation learning
 
+## *(You don't have to generate any of the model)
+## They are avaliable for download on https://one.luci.ooo/ECE209ProjectFiles/FinalPresentation/
+
 ## First, to generate the RL base line
 
 Inside the rl-starter-files repo, we used the following command to train the RL baseline.
@@ -39,8 +42,16 @@ python -m scripts.train --algo a2c --env MiniGrid-FourRooms-v0 --save-interval 1
 python -m scripts.train --algo a2c --env MiniGrid-FourRooms-v0 --save-interval 10 --frames 40000000 --recurrence 128 --batch-size 8192 --epochs 10 --frames-per-proc 512 --visibility 15 --model FourRoomVisibility15
 
 ```
+## to evaluate the performance, run the following command under rl-start-files
+### change the model and visibility accordingly
+
+``` bash
+python -m scripts.evaluate --env MiniGrid-FourRooms-v0 --model FourRoom9 --visibility 7 --memory
+```
 
 ## Third, generate Expert knowledge that can be used by imitation learning
+
+## *(again, you can download all the expert trajectories on https://one.luci.ooo/ECE209ProjectFiles/FinalPresentation/)
 ``` bash
 python -m scripts.visualize --env MiniGrid-FourRooms-v0 --model FourRoomVisibility15 --visibility 15 --memory --il_visibility 7 --save --episodes 30000
 # expect run time is about 30 minutes for 30000 trajectories
@@ -90,7 +101,7 @@ python -m scripts.evaluate --env MiniGrid-FourRooms-v0 --model imitation --visib
 ```
 
 
-#
+# deprecated below
 
 ## Create dataset for imitation learning
 ```
