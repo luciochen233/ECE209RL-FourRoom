@@ -1,0 +1,303 @@
+diff --git a/scripts/evaluate.py b/scripts/evaluate.py
+index 9255930..c63b883 100644
+--- a/scripts/evaluate.py
++++ b/scripts/evaluate.py
+@@ -28,6 +28,8 @@ parser.add_argument("--memory", action="store_true", default=False,
+                     help="add a LSTM to the model")
+ parser.add_argument("--text", action="store_true", default=False,
+                     help="add a GRU to the model")
++parser.add_argument("--visibility", type=int, default=7,
++                    help="Number of visibility (default: 7)")
+ 
+ if __name__ == "__main__":
+     args = parser.parse_args()
+@@ -44,7 +46,7 @@ if __name__ == "__main__":
+ 
+     envs = []
+     for i in range(args.procs):
+-        env = utils.make_env(args.env, args.seed + 10000 * i)
++        env = utils.make_env(args.env, args.seed + 10000 * i, agent_view_size_param = args.visibility)
+         envs.append(env)
+     env = ParallelEnv(envs)
+     print("Environments loaded\n")
+diff --git a/scripts/train.py b/scripts/train.py
+index 90c571d..5968a6c 100644
+--- a/scripts/train.py
++++ b/scripts/train.py
+@@ -35,6 +35,10 @@ parser.add_argument("--frames", type=int, default=10**7,
+ # Parameters for main algorithm
+ parser.add_argument("--epochs", type=int, default=4,
+                     help="number of epochs for PPO (default: 4)")
++
++parser.add_argument("--visibility", type=int, default=7,
++                    help="Number of visibility (default: 7)")
++
+ parser.add_argument("--batch-size", type=int, default=256,
+                     help="batch size for PPO (default: 256)")
+ parser.add_argument("--frames-per-proc", type=int, default=None,
+@@ -98,7 +102,7 @@ if __name__ == "__main__":
+ 
+     envs = []
+     for i in range(args.procs):
+-        envs.append(utils.make_env(args.env, args.seed + 10000 * i))
++        envs.append(utils.make_env(args.env, args.seed + 10000 * i, agent_view_size_param = args.visibility))
+     txt_logger.info("Environments loaded\n")
+ 
+     # Load training status
+diff --git a/scripts/visualize.py b/scripts/visualize.py
+index bec8430..eddca74 100644
+--- a/scripts/visualize.py
++++ b/scripts/visualize.py
+@@ -1,5 +1,7 @@
++import os
+ import argparse
+ import numpy
++import torch
+ 
+ import utils
+ from utils import device
+@@ -29,6 +31,13 @@ parser.add_argument("--memory", action="store_true", default=False,
+ parser.add_argument("--text", action="store_true", default=False,
+                     help="add a GRU to the model")
+ 
++parser.add_argument("--visibility", type=int, default=7,
++                    help="Number of visibility (default: 7)")
++parser.add_argument("--il_visibility", type=int, default=7,
++                    help="Number of visibility for il agent (default: 7)")
++parser.add_argument("--save", action="store_true", default=False,
++                    help="episodes (il state and expert action sequences) will be saved in model dir")
++
+ args = parser.parse_args()
+ 
+ # Set seed for all randomness sources
+@@ -41,7 +50,14 @@ print(f"Device: {device}\n")
+ 
+ # Load environment
+ 
+-env = utils.make_env(args.env, args.seed, render_mode="human")
++render_mode = "None"
++if args.save is False:
++    render_mode = "human"
++env = utils.make_env(args.env, args.seed, render_mode=render_mode, agent_view_size_param = args.visibility)
++
++if args.save:
++    env = utils.ILDatasetWrapper(env, il_view_size=args.il_visibility)
++    trajectories = {'states': [], 'actions': []}
+ for _ in range(args.shift):
+     env.reset()
+ print("Environment loaded\n")
+@@ -61,28 +77,45 @@ if args.gif:
+     frames = []
+ 
+ # Create a window to view the environment
+-env.render()
++if args.save is False:
++    env.render()
+ 
+ for episode in range(args.episodes):
+     obs, _ = env.reset()
++    if args.save:
++        states, actions = [], []
+ 
+     while True:
+-        env.render()
++        if args.save is False:
++            env.render()
+         if args.gif:
+             frames.append(numpy.moveaxis(env.get_frame(), 2, 0))
+ 
+         action = agent.get_action(obs)
++        if args.save:
++            states.append(obs['il_image'])
++            actions.append(action)
+         obs, reward, terminated, truncated, _ = env.step(action)
+         done = terminated | truncated
+         agent.analyze_feedback(reward, done)
+ 
+-        if done or env.window.closed:
++        if done and args.save:
++            trajectories['states'].append(states)
++            trajectories['actions'].append(actions)
++
++        if done or (env.window and env.window.closed):
+             break
+ 
+-    if env.window.closed:
++    if env.window and env.window.closed:
+         break
+ 
+ if args.gif:
+     print("Saving gif... ", end="")
+     write_gif(numpy.array(frames), args.gif+".gif", fps=1/args.pause)
+     print("Done.")
++
++if args.save:
++    torch.save(
++        trajectories,
++        os.path.join(model_dir, f"expert_vis{args.visibility}_il_vis{args.visibility}.pt")
++    )
+diff --git a/utils/__init__.py b/utils/__init__.py
+index 25d9ad7..b55e7ae 100644
+--- a/utils/__init__.py
++++ b/utils/__init__.py
+@@ -3,3 +3,4 @@ from .env import *
+ from .format import *
+ from .other import *
+ from .storage import *
++from .grid_world_expert import *
+diff --git a/utils/agent.py b/utils/agent.py
+index 7190fe5..bad946c 100644
+--- a/utils/agent.py
++++ b/utils/agent.py
+@@ -13,8 +13,10 @@ class Agent:
+     - to analyze the feedback (i.e. reward and done state) of its action."""
+ 
+     def __init__(self, obs_space, action_space, model_dir,
+-                 argmax=False, num_envs=1, use_memory=False, use_text=False):
++                 argmax=False, num_envs=1, use_memory=False, use_text=False, obs_shape=None):
+         obs_space, self.preprocess_obss = utils.get_obss_preprocessor(obs_space)
++        if obs_shape is not None:
++            obs_space['image'] = obs_shape
+         self.acmodel = ACModel(obs_space, action_space, use_memory=use_memory, use_text=use_text)
+         self.argmax = argmax
+         self.num_envs = num_envs
+@@ -54,3 +56,16 @@ class Agent:
+ 
+     def analyze_feedback(self, reward, done):
+         return self.analyze_feedbacks([reward], [done])
++
++    def reset_memory(self):
++        self.memories = torch.zeros(self.num_envs, self.acmodel.memory_size, device=device)
++
++    def action_dist(self, obs):
++        preprocessed_obss = self.preprocess_obss([obs], device=device)
++
++        with torch.no_grad():
++            if self.acmodel.recurrent:
++                dist, _, self.memories = self.acmodel(preprocessed_obss, self.memories)
++            else:
++                dist, _ = self.acmodel(preprocessed_obss)
++        return dist
+diff --git a/utils/env.py b/utils/env.py
+index fa4f36d..8022ef2 100644
+--- a/utils/env.py
++++ b/utils/env.py
+@@ -1,7 +1,116 @@
++import numpy as np
+ import gymnasium as gym
++from minigrid.core.constants import OBJECT_TO_IDX, COLOR_TO_IDX
+ 
+ 
+-def make_env(env_key, seed=None, render_mode=None):
+-    env = gym.make(env_key, render_mode=render_mode)
++def make_env(env_key, seed=None, render_mode=None,agent_view_size_param=7):
++    #env = gym.make(env_key, render_mode=render_mode)
++    env = gym.make(env_key, render_mode=render_mode, agent_view_size=agent_view_size_param)
+     env.reset(seed=seed)
+     return env
++
++
++class ILDatasetWrapper(gym.core.ObservationWrapper):
++    """
++    Wrapper to customize the agent field of view size.
++    This cannot be used with fully observable wrappers.
++    """
++
++    def __init__(self, env, il_view_size=7):
++        super().__init__(env)
++
++        assert il_view_size % 2 == 1
++        assert il_view_size >= 3
++
++        self.il_view_size = il_view_size
++
++        # Compute observation space with specified view size
++        new_image_space = gym.spaces.Box(
++            low=0, high=255, shape=(il_view_size, il_view_size, 3), dtype="uint8"
++        )
++
++        # Override the environment's observation spaceexit
++        self.observation_space = gym.spaces.Dict(
++            {**self.observation_space.spaces, "il_image": new_image_space}
++        )
++
++    def observation(self, obs):
++        env = self.unwrapped
++
++        grid, vis_mask = env.gen_obs_grid(self.il_view_size)
++
++        # Encode the partially observable view into a numpy array
++        image = grid.encode(vis_mask)
++
++        return {**obs, "il_image": image}
++
++
++NODE_TO_ONE_HOT = {
++    # Empty square
++    (1, 0, 0): [1, 0, 0, 0],
++    # Wall
++    (2, 5, 0): [0, 1, 0, 0],
++    # Goal
++    (8, 1, 0): [0, 0, 1, 0],
++    # Agent
++    (10, 0, 0): [0, 0, 0, 1],
++    (10, 0, 1): [0, 0, 0, 1],
++    (10, 0, 2): [0, 0, 0, 1],
++    (10, 0, 3): [0, 0, 0, 1],
++}
++
++
++class ExpertKnowledgeWrapper(gym.core.ObservationWrapper):
++    """
++    Wrapper to customize the agent field of view size.
++    This cannot be used with fully observable wrappers.
++    """
++
++    def __init__(self, env, agent_view_sizes=[9, 11, 15]):
++        super().__init__(env)
++
++        assert all(agent_view_size % 2 == 1 for agent_view_size in agent_view_sizes)
++        self.agent_view_sizes = agent_view_sizes
++
++        # Compute observation space with specified view size
++        obs_space_dict = {**self.observation_space.spaces}
++        for agent_view_size in agent_view_sizes:
++            new_image_space = gym.spaces.Box(
++                low=0, high=255, shape=(agent_view_size, agent_view_size, 3), dtype="uint8"
++            )
++            obs_space_dict['expert%d_image' % agent_view_size] = new_image_space
++
++        # Override the environment's observation spaceexit
++        self.observation_space = gym.spaces.Dict(obs_space_dict)
++
++    def observation(self, obs):
++        new_obs = {**obs}
++        env = self.unwrapped
++
++        for agent_view_size in self.agent_view_sizes:
++            grid, vis_mask = env.gen_obs_grid(agent_view_size)
++
++            # Encode the partially observable view into a numpy array
++            image = grid.encode(vis_mask)
++            new_obs['expert%d_image' % agent_view_size] = image
++
++        return new_obs
++
++    def reset(self, **kwargs):
++        obs, _ = super().reset(**kwargs)
++        env = self.unwrapped
++        full_grid = env.grid.encode()
++        full_grid[env.agent_pos[0]][env.agent_pos[1]] = np.array([
++            OBJECT_TO_IDX['agent'],
++            COLOR_TO_IDX['red'],
++            env.agent_dir
++        ])
++        grid_shape = full_grid.shape
++        full_grid = full_grid.reshape(-1, 3)
++        full_grid = np.array(list(map(lambda x: NODE_TO_ONE_HOT[tuple(x)], full_grid)))
++        grid_shape = grid_shape[:-1] + (4,) # last dim of NODE_TO_ONE_HOT
++        full_grid = full_grid.reshape(grid_shape)
++
++        obs['planner_image'] = full_grid
++        obs['direction'] = self.agent_dir
++        return obs, {}
